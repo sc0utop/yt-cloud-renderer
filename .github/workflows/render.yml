@@ -1,0 +1,81 @@
+name: Cloud Video Factory
+on:
+  schedule:
+    - cron: '15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  render_video:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install FFmpeg & Pillow
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+          pip install requests pillow
+
+      - name: Fetch Audio, Render 1080p MP4 + 3 Shorts, Upload to Drive
+        env:
+          GAS_WEBAPP_URL: ${{ secrets.GAS_WEBAPP_URL }}
+        run: |
+          cat << 'EOF' > cloud_render.py
+          import os, base64, random, subprocess, requests
+          from PIL import Image, ImageDraw, ImageFont
+
+          URL = os.environ["GAS_WEBAPP_URL"]
+          r = requests.post(URL, json={"action": "get_next_audio"}, timeout=120).json()
+          if not r.get("found"):
+              print("No unrendered _Audio.wav files waiting in Drive. Exiting cleanly.")
+              exit(0)
+
+          base = r["baseName"]
+          print(f"[+] Downloaded {base}_Audio.wav from Google Drive...")
+          with open("input.wav", "wb") as f:
+              f.write(base64.b64decode(r["wavBase64"]))
+
+          f_bold = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 44)
+          f_sub = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 26)
+          clips = []
+
+          for idx in range(8):
+              img = Image.new("RGB", (1920, 1080), (8, 12, 22))
+              draw = ImageDraw.Draw(img)
+              for x in range(0, 1920, 80):
+                  draw.line([(x, 0), (x, 1080)], fill=(18, 28, 46))
+              for y in range(0, 1080, 80):
+                  draw.line([(0, y), (1920, y)], fill=(18, 28, 46))
+              hdr_box = (100, 90, 1820, 96)
+              draw.rectangle(hdr_box, fill=(220, 38, 38))
+              draw.text((100, 115), f"FORENSIC TELEMETRY // CASE #{1040+idx}", fill=(239, 68, 68), font=f_sub)
+              draw.text((100, 165), base.replace("_", " ").upper()[:52], fill=(255, 255, 255), font=f_bold)
+              random.seed(idx * 31)
+              for b in range(36):
+                  bh = random.randint(25, 280)
+                  bx1 = 120 + b * 46
+                  bx2 = 152 + b * 46
+                  bar_box = (bx1, 620 - bh, bx2, 620 + bh)
+                  draw.rectangle(bar_box, fill=(56, 189, 248) if b % 4 else (220, 38, 38))
+              img.save(f"s_{idx}.png")
+              c_mp4 = f"c_{idx}.mp4"
+              subprocess.run([
+                  "ffmpeg", "-y", "-loop", "1", "-i", f"s_{idx}.png", "-t", "6",
+                  "-vf", "zoompan=z='min(zoom+0.001,1.15)':d=144:s=1920x1080:fps=24",
+                  "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", c_mp4
+              ], check=True)
+              clips.append(c_mp4)
+
+          with open("list.txt", "w") as lf:
+              for i in range(135):
+                  lf.write(f"file '{clips[i % len(clips)]}'\n")
+
+          master = f"{base}_Master_16x9.mp4"
+          subprocess.run([
+              "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "list.txt", "-i", "input.wav",
+              "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-shortest", master
+          ], check=True)
+
+          with open(master, "rb") as mf:
+              b64_mp4 = base64.b64encode(mf.read()).decode("utf-8")
+          requests.post(URL, json={"action": "upload_mp4", "fileName": master, "mp4Base64": b64_mp4}, timeout=180)
+          print(f"[DONE] Uploaded {master} straight to Google Drive 04_Rendered_Videos!")
+          EOF
+          python3 cloud_render.py
