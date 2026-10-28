@@ -18,19 +18,29 @@ jobs:
           GAS_WEBAPP_URL: ${{ secrets.GAS_WEBAPP_URL }}
         run: |
           cat << 'EOF' > cloud_render.py
-          import os, base64, random, subprocess, requests
+          import os, re, json, random, subprocess, requests
           from PIL import Image, ImageDraw, ImageFont
 
           URL = os.environ["GAS_WEBAPP_URL"]
-          r = requests.post(URL, json={"action": "get_next_audio"}, timeout=120).json()
+          r = requests.post(URL, json={"action": "get_next_audio"}, timeout=60).json()
           if not r.get("found"):
               print("No unrendered _Audio.wav files waiting in Drive. Exiting cleanly.")
               exit(0)
 
           base = r["baseName"]
-          print(f"[+] Downloaded {base}_Audio.wav from Google Drive...")
+          audio_id = r["audioFileId"]
+          folder_id = r["videoFolderId"]
+          token = r["oauthToken"]
+          auth_hdr = {"Authorization": f"Bearer {token}"}
+
+          print(f"[+] Downloading {base}_Audio.wav directly from Google Drive API...")
+          dl_url = "https:" + "//://googleapis.com" + audio_id + "?alt=media"
           with open("input.wav", "wb") as f:
-              f.write(base64.b64decode(r["wavBase64"]))
+              f.write(requests.get(dl_url, headers=auth_hdr, timeout=120).content)
+
+          res = subprocess.run(["ffmpeg", "-i", "input.wav"], stderr=subprocess.PIPE, text=True)
+          m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", res.stderr)
+          dur = int(m.group(1))*3600 + int(m.group(2))*60 + float(m.group(3)) if m else 600.0
 
           f_bold = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 44)
           f_sub = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 26)
@@ -59,23 +69,48 @@ jobs:
               subprocess.run([
                   "ffmpeg", "-y", "-loop", "1", "-i", f"s_{idx}.png", "-t", "6",
                   "-vf", "zoompan=z='min(zoom+0.001,1.15)':d=144:s=1920x1080:fps=24",
-                  "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", c_mp4
-              ], check=True)
+                  "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p", c_mp4
+              ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
               clips.append(c_mp4)
 
+          total_cuts = int(dur // 6) + 3
           with open("list.txt", "w") as lf:
-              for i in range(135):
+              for i in range(total_cuts):
                   lf.write(f"file '{clips[i % len(clips)]}'\n")
 
           master = f"{base}_Master_16x9.mp4"
+          print(f"[+] Stitching {dur/60:.1f}-min 1080p Master Video...")
           subprocess.run([
               "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "list.txt", "-i", "input.wav",
               "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-shortest", master
-          ], check=True)
+          ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-          with open(master, "rb") as mf:
-              b64_mp4 = base64.b64encode(mf.read()).decode("utf-8")
-          requests.post(URL, json={"action": "upload_mp4", "fileName": master, "mp4Base64": b64_mp4}, timeout=180)
-          print(f"[DONE] Uploaded {master} straight to Google Drive 04_Rendered_Videos!")
+          def upload_to_drive(local_file):
+              print(f"[+] Direct-uploading {local_file} to Google Drive 04_Rendered_Videos...")
+              create_url = "https:" + "//www.googleapis.com/drive/v3/files"
+              meta = {"name": local_file, "parents": [folder_id], "mimeType": "video/mp4"}
+              r1 = requests.post(create_url, headers=auth_hdr, json=meta, timeout=30).json()
+              file_id = r1["id"]
+
+              up_url = "https:" + "//www.googleapis.com/upload/drive/v3/files/" + file_id + "?uploadType=media"
+              up_hdr = {"Authorization": f"Bearer {token}", "Content-Type": "video/mp4"}
+              with open(local_file, "rb") as vf:
+                  r2 = requests.patch(up_url, headers=up_hdr, data=vf, timeout=300)
+              print(f"[✓] Uploaded {local_file} -> HTTP {r2.status_code}")
+
+          upload_to_drive(master)
+
+          for idx, pct in enumerate([0.20, 0.50, 0.75], 1):
+              start_sec = max(5, int(dur * pct))
+              short_mp4 = f"{base}_Short_{idx}_9x16.mp4"
+              subprocess.run([
+                  "ffmpeg", "-y", "-ss", str(start_sec), "-t", "55", "-i", master,
+                  "-vf", "scale=-1:1920,crop=1080:1920",
+                  "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+                  "-c:a", "aac", "-b:a", "128k", short_mp4
+              ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+              upload_to_drive(short_mp4)
+
+          print("[DONE] Master + 3 Vertical Shorts saved in 04_Rendered_Videos!")
           EOF
           python3 cloud_render.py
