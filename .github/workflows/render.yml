@@ -46,38 +46,72 @@ jobs:
           m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", res.stderr)
           dur = int(m.group(1))*3600 + int(m.group(2))*60 + float(m.group(3)) if m else 600.0
 
-          f_bold = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 44)
-          f_sub = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 26)
+          f_bold = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
+          f_sub = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 22)
+
+          def text_width(text, font):
+              img_t = Image.new("RGB", (1, 1))
+              d_t = ImageDraw.Draw(img_t)
+              bbox = d_t.textbbox((0, 0), text, font=font)
+              return bbox[2] - bbox[0]
+
+          def wrap_text(text, font, max_w):
+              words = text.split()
+              lines, cur = [], ""
+              for w in words:
+                  test = (cur + " " + w).strip()
+                  if text_width(test, font) <= max_w:
+                      cur = test
+                  else:
+                      if cur: lines.append(cur)
+                      cur = w
+              if cur: lines.append(cur)
+              return lines
+
+          def clean_hud_text(text):
+              # Hard-strip all brackets, asterisks, lines, and tokens
+              s = text.replace("**", "").replace("[", "").replace("]", "").replace("#", "").replace("_", " ").strip()
+              s = re.sub(r'^(visual|audio|narrator|cue|timeline|scene|director|sfx|sound)\s*:?\s*', '', s, flags=re.I)
+              return s.strip()
+
+          title_clean = clean_hud_text(base).upper()
           clips = []
 
-          # Generates 8 beautiful distinct animated technical HUD boards
+          # Build 8 perfectly formatted moving telemetry boards
           for idx in range(8):
               img = Image.new("RGB", (1920, 1080), (8, 12, 22))
               draw = ImageDraw.Draw(img)
-              for x in range(0, 1920, 80): draw.line([(x, 0), (1920, 1080)], fill=(18, 28, 46))
-              for y in range(0, 1080, 80): draw.line([(0, y), (1920, y)], fill=(18, 28, 46))
               
-              hdr_box = [100, 90, 1820, 96]
-              draw.rectangle(hdr_box, fill=(220, 38, 38))
-              draw.text((100, 115), f"FORENSIC SYSTEM ANALYSIS // CASE #{1040+idx}", fill=(239, 68, 68), font=f_sub)
-              draw.text((100, 165), base.replace("_", " ").upper()[:52], fill=(255, 255, 255), font=f_bold)
+              for x in range(0, 1920, 80): draw.line([(x, 0), (x, 1080)], fill=(18, 28, 46), width=1)
+              for y in range(0, 1080, 80): draw.line([(0, y), (1920, y)], fill=(18, 28, 46), width=1)
               
-              random.seed(idx * 31)
-              for b in range(36):
-                  bh = random.randint(25, 280)
-                  bx1 = 120 + b * 46
-                  bx2 = 152 + b * 46
-                  bar_box = [bx1, 620 - bh, bx2, 620 + bh]
-                  draw.rectangle(bar_box, fill=(56, 189, 248) if b % 4 else (220, 38, 38))
+              # Standard Top Header Box
+              draw.rectangle([100, 70, 1820, 76], fill=(220, 38, 38))
+              draw.text((100, 95), f"FORENSIC ANALYTICS // DATA STACK NODE #{1040+idx}", fill=(239, 68, 68), font=f_sub)
+              
+              # Safe Auto-Wrapped Main Title Text Block
+              wrapped_lines = wrap_text(title_clean, f_bold, 1600)
+              y_offset = 145
+              for wl in wrapped_lines[:2]:
+                  draw.text((100, y_offset), wl, fill=(255, 255, 255), font=f_bold)
+                  y_offset += 50
+              
+              random.seed(idx * 43)
+              for b in range(38):
+                  bh = random.randint(30, 260)
+                  bx1 = 120 + b * 44
+                  bx2 = 148 + b * 44
+                  draw.rectangle([bx1, 640 - bh, bx2, 640 + bh], fill=(56, 189, 248) if b % 4 else (220, 38, 38))
                   
               img.save(f"s_{idx}.png")
               c_mp4 = f"c_{idx}.mp4"
               subprocess.run([
                   "ffmpeg", "-y", "-loop", "1", "-i", f"s_{idx}.png", "-t", "6",
-                  "-vf", "zoompan=z='min(zoom+0.001,1.15)':d=144:s=1920x1080:fps=24",
+                  "-vf", "zoompan=z='min(zoom+0.001,1.14)':d=144:s=1920x1080:fps=24",
                   "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p", c_mp4
               ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
               clips.append(c_mp4)
+              os.remove(f"s_{idx}.png")
 
           total_cuts = int(dur // 6) + 3
           with open("list.txt", "w") as lf:
@@ -85,7 +119,7 @@ jobs:
                   lf.write(f"file '{clips[i % len(clips)]}'\n")
 
           master = f"{base}_Master_16x9.mp4"
-          print(f"[+] Stitching {dur/60:.1f}-min 1080p Master Video...")
+          print(f"[+] Assembling {dur/60:.1f}-min 1080p Master Video...")
           subprocess.run([
               "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "list.txt", "-i", "input.wav",
               "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-shortest", master
