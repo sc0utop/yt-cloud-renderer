@@ -33,8 +33,13 @@ jobs:
           token = r["oauthToken"]
           auth_hdr = {"Authorization": f"Bearer {token}"}
 
+          # Build Google Drive API URLs from plain words so no chat filter can ever corrupt them!
+          HOST = "www." + "googleapis" + ".com"
+          DRIVE_FILES_URL = "/".join(["https:", "", HOST, "drive", "v3", "files"])
+          DRIVE_UPLOAD_URL = "/".join(["https:", "", HOST, "upload", "drive", "v3", "files"])
+
           print(f"[+] Downloading {base}_Audio.wav directly from Google Drive API...")
-          dl_url = "https:" + "//://googleapis.com" + audio_id + "?alt=media"
+          dl_url = DRIVE_FILES_URL + "/" + audio_id + "?alt=media"
           with open("input.wav", "wb") as f:
               f.write(requests.get(dl_url, headers=auth_hdr, timeout=120).content)
 
@@ -87,12 +92,11 @@ jobs:
 
           def upload_to_drive(local_file):
               print(f"[+] Direct-uploading {local_file} to Google Drive 04_Rendered_Videos...")
-              create_url = "https:" + "//www.googleapis.com/drive/v3/files"
               meta = {"name": local_file, "parents": [folder_id], "mimeType": "video/mp4"}
-              r1 = requests.post(create_url, headers=auth_hdr, json=meta, timeout=30).json()
+              r1 = requests.post(DRIVE_FILES_URL, headers=auth_hdr, json=meta, timeout=30).json()
               file_id = r1["id"]
 
-              up_url = "https:" + "//www.googleapis.com/upload/drive/v3/files/" + file_id + "?uploadType=media"
+              up_url = DRIVE_UPLOAD_URL + "/" + file_id + "?uploadType=media"
               up_hdr = {"Authorization": f"Bearer {token}", "Content-Type": "video/mp4"}
               with open(local_file, "rb") as vf:
                   r2 = requests.patch(up_url, headers=up_hdr, data=vf, timeout=300)
